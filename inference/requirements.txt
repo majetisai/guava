@@ -1,0 +1,10 @@
+# Guava inference service.
+# Model libraries are added per feature so the service stays small until needed.
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+python-multipart==0.0.20
+
+# STT (CPU)
+faster-whisper==1.1.1
+requests==2.34.2
