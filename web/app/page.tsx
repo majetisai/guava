@@ -5,13 +5,13 @@ const features = [
     href: "/stt",
     title: "Speech to Text",
     blurb: "Upload audio, get an accurate transcript with SRT and VTT export.",
-    status: "In progress",
+    status: "Live",
   },
   {
     href: "/tts",
     title: "Text to Speech",
     blurb: "Turn text into natural speech across a set of built-in voices.",
-    status: "Planned",
+    status: "Live",
   },
   {
     href: "/clone",
