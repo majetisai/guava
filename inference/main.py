@@ -51,8 +51,15 @@ def health() -> Health:
     )
 
 
+class Segment(BaseModel):
+    start: float
+    end: float
+    text: str
+
+
 class SttResponse(BaseModel):
     text: str
+    segments: list[Segment]
     srt: str
     vtt: str
     language: str
@@ -67,9 +74,15 @@ MAX_UPLOAD_BYTES = int(os.getenv("GUAVA_MAX_UPLOAD_MB", "25")) * 1024 * 1024
 async def stt(
     audio: UploadFile = File(...),
     language: str | None = Form(default=None),
+    task: str = Form(default="transcribe"),
 ) -> SttResponse:
     """Transcribe an uploaded audio file. The model is imported lazily so the
-    service boots fast and only pays the load cost on the first transcription."""
+    service boots fast and only pays the load cost on the first transcription.
+
+    task: "transcribe" (keep spoken language) or "translate" (output English)."""
+    if task not in ("transcribe", "translate"):
+        raise HTTPException(status_code=400, detail="task must be transcribe or translate.")
+
     data = await audio.read()
     if not data:
         raise HTTPException(status_code=400, detail="Empty audio file.")
@@ -88,7 +101,7 @@ async def stt(
 
         from models.stt import transcribe  # lazy import (loads faster-whisper)
 
-        result = transcribe(tmp_path, language=language)
+        result = transcribe(tmp_path, language=language, task=task)
         return SttResponse(**result)
     except HTTPException:
         raise
@@ -97,3 +110,37 @@ async def stt(
     finally:
         if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
+
+
+# A friendly subset of the 99+ languages Whisper supports, for the UI dropdown.
+# code -> display name. "auto" lets Whisper detect the language itself.
+SUPPORTED_LANGUAGES = {
+    "auto": "Auto-detect",
+    "en": "English",
+    "es": "Spanish",
+    "fr": "French",
+    "de": "German",
+    "it": "Italian",
+    "pt": "Portuguese",
+    "nl": "Dutch",
+    "ru": "Russian",
+    "zh": "Chinese",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "hi": "Hindi",
+    "ar": "Arabic",
+    "tr": "Turkish",
+    "pl": "Polish",
+    "uk": "Ukrainian",
+    "vi": "Vietnamese",
+    "id": "Indonesian",
+    "te": "Telugu",
+    "ta": "Tamil",
+}
+
+
+@app.get("/languages")
+def languages() -> dict:
+    """Languages the UI offers. Whisper transcribes all of them and can also
+    translate any of them *to English* (the translate task)."""
+    return {"languages": SUPPORTED_LANGUAGES}

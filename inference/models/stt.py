@@ -31,21 +31,33 @@ def _fmt_ts(seconds: float, sep: str) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}{sep}{ms:03d}"
 
 
-def transcribe(audio_path: str, language: str | None = None) -> dict:
-    """Transcribe a file and return text plus SRT and VTT subtitle strings."""
+def transcribe(
+    audio_path: str,
+    language: str | None = None,
+    task: str = "transcribe",
+) -> dict:
+    """Transcribe a file and return text plus SRT and VTT subtitle strings.
+
+    task="transcribe" keeps the spoken language; task="translate" renders the
+    output in English (Whisper only translates *to* English)."""
     segments, info = _model().transcribe(
         audio_path,
         language=language,  # None -> auto-detect
+        task=task,
         vad_filter=True,    # skip long silences, fewer hallucinations
     )
 
     text_parts: list[str] = []
     srt_lines: list[str] = []
     vtt_lines: list[str] = ["WEBVTT", ""]
+    seg_list: list[dict] = []  # structured segments for the UI (timestamps + seek)
 
     for i, seg in enumerate(segments, start=1):
         chunk = seg.text.strip()
         text_parts.append(chunk)
+        seg_list.append(
+            {"start": round(seg.start, 2), "end": round(seg.end, 2), "text": chunk}
+        )
 
         srt_lines.append(str(i))
         srt_lines.append(f"{_fmt_ts(seg.start, ',')} --> {_fmt_ts(seg.end, ',')}")
@@ -58,6 +70,7 @@ def transcribe(audio_path: str, language: str | None = None) -> dict:
 
     return {
         "text": " ".join(text_parts).strip(),
+        "segments": seg_list,
         "srt": "\n".join(srt_lines).strip() + "\n",
         "vtt": "\n".join(vtt_lines).strip() + "\n",
         "language": info.language,
