@@ -17,7 +17,7 @@ const features = [
     href: "/clone",
     title: "Voice Cloning",
     blurb: "Clone a voice from a short sample — with a real consent flow.",
-    status: "Planned",
+    status: "Live",
   },
 ];
 

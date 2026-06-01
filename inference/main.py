@@ -7,14 +7,23 @@ development and deploys to a free Hugging Face Space (CPU) for the live demo.
 Endpoints (added per feature):
   POST /stt    audio -> text (+ SRT, VTT)   [live]
   POST /tts    text  -> audio (WAV)         [live]
-  POST /clone  sample + text -> audio        [planned]
+  POST /clone  sample + text -> job id       [live, async]
+  GET  /clone/status/{id} -> job status / audio
 """
 from __future__ import annotations
 
 import os
 import tempfile
+import uuid
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import (
+    BackgroundTasks,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -48,7 +57,7 @@ def health() -> Health:
         status="ok",
         service="guava-inference",
         version="0.1.0",
-        features={"stt": True, "tts": True, "clone": False},
+        features={"stt": True, "tts": True, "clone": True},
     )
 
 
@@ -192,3 +201,94 @@ def tts(req: TtsRequest) -> Response:
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Synthesis failed: {exc}")
+
+
+# --------------------------------------------------------------------------
+# Voice cloning (Coqui XTTS-v2) — async, because it's slow on CPU
+# --------------------------------------------------------------------------
+
+MAX_CLONE_CHARS = int(os.getenv("GUAVA_MAX_CLONE_CHARS", "500"))
+
+# In-memory job store. Fine for a single-process demo; a real deployment would
+# use Redis or a DB. Each entry: {status, audio (bytes|None), error (str|None)}.
+_clone_jobs: dict[str, dict] = {}
+
+
+def _run_clone(job_id: str, text: str, ref_path: str, language: str) -> None:
+    """Background worker: generate the clone, store the result, clean up."""
+    try:
+        from models.clone import clone_speak  # lazy import (loads XTTS-v2)
+
+        wav = clone_speak(text, ref_path, language=language)
+        _clone_jobs[job_id] = {"status": "completed", "audio": wav, "error": None}
+    except Exception as exc:
+        _clone_jobs[job_id] = {"status": "failed", "audio": None, "error": str(exc)}
+    finally:
+        if os.path.exists(ref_path):
+            os.remove(ref_path)
+
+
+@app.get("/clone/languages")
+def clone_languages() -> dict:
+    """Languages the cloned voice can speak in."""
+    from models.clone import LANGUAGES
+
+    return {"languages": LANGUAGES}
+
+
+@app.post("/clone")
+async def clone(
+    background: BackgroundTasks,
+    audio: UploadFile = File(...),
+    text: str = Form(...),
+    language: str = Form(default="en"),
+) -> dict:
+    """Start a voice-clone job. Returns a job id immediately; poll
+    /clone/status/{id} for the result. Cloning is slow on CPU, so we don't
+    block the request."""
+    text = text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Text is empty.")
+    if len(text) > MAX_CLONE_CHARS:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Text too long. Max {MAX_CLONE_CHARS} characters for cloning.",
+        )
+
+    data = await audio.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty reference audio.")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Reference audio too large.")
+
+    # Persist the reference clip; the worker deletes it when done.
+    suffix = os.path.splitext(audio.filename or "")[1] or ".wav"
+    fd, ref_path = tempfile.mkstemp(suffix=suffix)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+
+    job_id = uuid.uuid4().hex
+    _clone_jobs[job_id] = {"status": "running", "audio": None, "error": None}
+    background.add_task(_run_clone, job_id, text, ref_path, language)
+    return {"jobId": job_id, "status": "running"}
+
+
+@app.get("/clone/status/{job_id}")
+def clone_status(job_id: str) -> dict:
+    """Poll a clone job. While running, returns {status:"running"}. On success
+    the client should fetch /clone/result/{id} for the audio."""
+    job = _clone_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Unknown job id.")
+    return {"status": job["status"], "error": job["error"]}
+
+
+@app.get("/clone/result/{job_id}")
+def clone_result(job_id: str) -> Response:
+    """Return the generated WAV for a completed job."""
+    job = _clone_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Unknown job id.")
+    if job["status"] != "completed" or job["audio"] is None:
+        raise HTTPException(status_code=409, detail="Job not completed.")
+    return Response(content=job["audio"], media_type="audio/wav")
