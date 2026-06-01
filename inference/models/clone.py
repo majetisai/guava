@@ -111,6 +111,63 @@ def _trim_trailing(audio: np.ndarray) -> np.ndarray:
     return audio[:end]
 
 
+def _prepare_reference(path: str) -> str:
+    """Clean the reference clip before cloning: load, convert to mono, trim
+    leading/trailing silence, and normalize volume. A consistent, well-leveled
+    reference gives XTTS a cleaner voice to copy and fewer artifacts. Writes a
+    processed temp file and returns its path (falls back to the original on
+    any error)."""
+    import tempfile
+
+    try:
+        import librosa
+
+        y, _ = librosa.load(path, sr=SAMPLE_RATE, mono=True)
+        if y.size == 0:
+            return path
+        y, _ = librosa.effects.trim(y, top_db=30)  # cut silent head/tail
+        peak = float(np.max(np.abs(y)))
+        if peak > 0:
+            y = y * (0.95 / peak)  # normalize to a consistent level
+        fd, out = tempfile.mkstemp(suffix=".wav")
+        import os as _os
+
+        _os.close(fd)
+        sf.write(out, y, SAMPLE_RATE)
+        return out
+    except Exception:
+        return path  # preprocessing is best-effort
+
+
+def _synth_chunk(model, text: str, ref: str, language: str, temperature: float):
+    wav = model.tts(
+        text=text,
+        speaker_wav=ref,
+        language=language,
+        # Anti-hallucination settings. Lower temperature + a repetition penalty
+        # stop the decoder from "running away" into invented words; length_penalty
+        # discourages padding past the actual text.
+        temperature=temperature,
+        repetition_penalty=10.0,
+        length_penalty=1.0,
+        top_k=50,
+        top_p=0.85,
+        enable_text_splitting=False,
+    )
+    return _trim_trailing(np.asarray(wav, dtype=np.float32))
+
+
+def _looks_hallucinated(text: str, audio: np.ndarray) -> bool:
+    """Heuristic: if the audio is far longer than the text could plausibly take
+    to speak, the model likely tacked on invented words. ~12 chars/sec is normal
+    speech; we flag anything beyond a generous ceiling."""
+    if audio.size == 0:
+        return False
+    seconds = len(audio) / SAMPLE_RATE
+    expected = max(1.0, len(text) / 12.0)
+    return seconds > expected * 2.2 + 1.0
+
+
 def clone_speak(
     text: str,
     reference_audio_path: str,
@@ -119,38 +176,39 @@ def clone_speak(
 ) -> bytes:
     """Generate `text` spoken in the voice from `reference_audio_path`.
 
-    Long text is split into sentences and generated one at a time. `on_progress`,
-    if given, is called as on_progress(done, total) after each chunk so callers
-    can report a progress bar. Returns the concatenated WAV bytes."""
+    Long text is split into sentences and generated one at a time. Chunks that
+    look hallucinated (audio much longer than the text warrants) are retried once
+    with a lower temperature. `on_progress(done, total)` reports progress.
+    Returns the concatenated WAV bytes."""
     model = _model()
     chunks = _split_sentences(text)
     if not chunks:
         chunks = [_clean_text(text) or text]
     total = len(chunks)
 
+    ref = _prepare_reference(reference_audio_path)
+
     audio_parts: list[np.ndarray] = []
-    for i, chunk in enumerate(chunks, start=1):
-        wav = model.tts(
-            text=chunk,
-            speaker_wav=reference_audio_path,
-            language=language,
-            # Anti-hallucination settings. Lower temperature + a repetition
-            # penalty stop the decoder from "running away" into invented words
-            # at the end of a chunk; a short length_penalty discourages it from
-            # padding past the actual text.
-            temperature=0.65,
-            repetition_penalty=10.0,
-            length_penalty=1.0,
-            top_k=50,
-            top_p=0.85,
-            enable_text_splitting=False,
-        )
-        audio = _trim_trailing(np.asarray(wav, dtype=np.float32))
-        if audio_parts:
-            audio_parts.append(_GAP)
-        audio_parts.append(audio)
-        if on_progress:
-            on_progress(i, total)
+    try:
+        for i, chunk in enumerate(chunks, start=1):
+            audio = _synth_chunk(model, chunk, ref, language, temperature=0.65)
+            # If it looks like it hallucinated, retry once more conservatively.
+            if _looks_hallucinated(chunk, audio):
+                retry = _synth_chunk(model, chunk, ref, language, temperature=0.3)
+                if len(retry) < len(audio):
+                    audio = retry
+            if audio_parts:
+                audio_parts.append(_GAP)
+            audio_parts.append(audio)
+            if on_progress:
+                on_progress(i, total)
+    finally:
+        # remove the processed reference if we created one
+        if ref != reference_audio_path:
+            import os as _os
+
+            if _os.path.exists(ref):
+                _os.remove(ref)
 
     audio = np.concatenate(audio_parts) if audio_parts else np.zeros(0, np.float32)
     buf = io.BytesIO()
