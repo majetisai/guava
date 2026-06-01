@@ -52,14 +52,43 @@ def _model():
     return TTS("tts_models/multilingual/multi-dataset/xtts_v2").to("cpu")
 
 
+def _clean_text(text: str) -> str:
+    """Reduce XTTS hallucinations. The model tends to invent extra speech around
+    quote marks, stray symbols, and odd spacing, so we normalize the text before
+    synthesis: strip quotes/brackets, collapse whitespace, normalize dashes."""
+    import re
+
+    t = text.replace("“", "").replace("”", "").replace('"', "")
+    t = t.replace("‘", "'").replace("’", "'")
+    t = t.replace("—", ", ").replace("–", ", ").replace("--", ", ")
+    t = t.replace("…", ".")
+    # drop characters XTTS doesn't speak but may react to
+    t = re.sub(r"[\"`*_#<>\[\]{}|~^]", "", t)
+    t = re.sub(r"[ \t]+", " ", t)
+    return t.strip()
+
+
 def _split_sentences(text: str) -> list[str]:
     """Split text into sentence-ish chunks so long input can be generated piece
-    by piece (with progress) and stitched back together. Splits on . ! ? and
-    newlines, keeping the delimiter."""
+    by piece (with progress) and stitched back together. Each chunk is cleaned;
+    fragments shorter than 2 chars are dropped (they trigger hallucinations) and
+    every chunk is made to end with punctuation so the model knows it's done."""
     import re
 
     parts = re.split(r"(?<=[.!?])\s+|\n+", text.strip())
-    return [p.strip() for p in parts if p.strip()]
+    out: list[str] = []
+    for p in parts:
+        c = _clean_text(p)
+        if len(c) < 2:
+            continue
+        if c[-1] not in ".!?":
+            c += "."
+        out.append(c)
+    return out
+
+
+# A short silence inserted between stitched sentences so they don't run together.
+_GAP = np.zeros(int(SAMPLE_RATE * 0.18), dtype=np.float32)
 
 
 def clone_speak(
@@ -74,7 +103,9 @@ def clone_speak(
     if given, is called as on_progress(done, total) after each chunk so callers
     can report a progress bar. Returns the concatenated WAV bytes."""
     model = _model()
-    chunks = _split_sentences(text) or [text]
+    chunks = _split_sentences(text)
+    if not chunks:
+        chunks = [_clean_text(text) or text]
     total = len(chunks)
 
     audio_parts: list[np.ndarray] = []
@@ -84,6 +115,8 @@ def clone_speak(
             speaker_wav=reference_audio_path,
             language=language,
         )
+        if audio_parts:
+            audio_parts.append(_GAP)
         audio_parts.append(np.asarray(wav, dtype=np.float32))
         if on_progress:
             on_progress(i, total)

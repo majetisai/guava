@@ -318,9 +318,30 @@ export default function ClonePage() {
           </div>
         )}
 
-        <p className="mt-2 text-xs text-gray-500">
-          A clean 6–15 second clip works best.
-        </p>
+        <details className="mt-2 text-xs text-gray-500">
+          <summary className="cursor-pointer hover:text-pink-500">
+            Tips for a better clone (accent, clarity)
+          </summary>
+          <ul className="mt-2 list-disc space-y-1 pl-5">
+            <li>
+              Use <strong>15–30 seconds</strong> of clear speech — longer, cleaner
+              samples capture your accent far better than a short clip.
+            </li>
+            <li>
+              Record in a <strong>quiet room</strong>, close to the mic, no music
+              or background noise.
+            </li>
+            <li>
+              Speak naturally in <strong>your own accent</strong> — the clone
+              copies the accent in your sample, so a thin or noisy clip makes it
+              drift toward a generic accent.
+            </li>
+            <li>
+              Keep the script plain — drop quotes, stage directions, and notes
+              like &ldquo;(pause here)&rdquo;; the model reads everything literally.
+            </li>
+          </ul>
+        </details>
         {refUrl && (
           <audio
             src={refUrl}
