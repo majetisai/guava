@@ -207,22 +207,33 @@ def tts(req: TtsRequest) -> Response:
 # Voice cloning (Coqui XTTS-v2) — async, because it's slow on CPU
 # --------------------------------------------------------------------------
 
-MAX_CLONE_CHARS = int(os.getenv("GUAVA_MAX_CLONE_CHARS", "500"))
+MAX_CLONE_CHARS = int(os.getenv("GUAVA_MAX_CLONE_CHARS", "3000"))
 
 # In-memory job store. Fine for a single-process demo; a real deployment would
-# use Redis or a DB. Each entry: {status, audio (bytes|None), error (str|None)}.
+# use Redis or a DB. Each entry:
+#   {status, audio (bytes|None), error (str|None), done (int), total (int)}
 _clone_jobs: dict[str, dict] = {}
 
 
 def _run_clone(job_id: str, text: str, ref_path: str, language: str) -> None:
-    """Background worker: generate the clone, store the result, clean up."""
+    """Background worker: generate the clone, store the result, clean up.
+    Updates the job's done/total counters so the client can show progress."""
     try:
         from models.clone import clone_speak  # lazy import (loads XTTS-v2)
 
-        wav = clone_speak(text, ref_path, language=language)
-        _clone_jobs[job_id] = {"status": "completed", "audio": wav, "error": None}
+        def progress(done: int, total: int) -> None:
+            job = _clone_jobs.get(job_id)
+            if job is not None:
+                job["done"] = done
+                job["total"] = total
+
+        wav = clone_speak(text, ref_path, language=language, on_progress=progress)
+        job = _clone_jobs[job_id]
+        job.update(status="completed", audio=wav, error=None)
     except Exception as exc:
-        _clone_jobs[job_id] = {"status": "failed", "audio": None, "error": str(exc)}
+        job = _clone_jobs.get(job_id, {})
+        job.update(status="failed", audio=None, error=str(exc))
+        _clone_jobs[job_id] = job
     finally:
         if os.path.exists(ref_path):
             os.remove(ref_path)
@@ -268,19 +279,30 @@ async def clone(
         f.write(data)
 
     job_id = uuid.uuid4().hex
-    _clone_jobs[job_id] = {"status": "running", "audio": None, "error": None}
+    _clone_jobs[job_id] = {
+        "status": "running",
+        "audio": None,
+        "error": None,
+        "done": 0,
+        "total": 0,
+    }
     background.add_task(_run_clone, job_id, text, ref_path, language)
     return {"jobId": job_id, "status": "running"}
 
 
 @app.get("/clone/status/{job_id}")
 def clone_status(job_id: str) -> dict:
-    """Poll a clone job. While running, returns {status:"running"}. On success
-    the client should fetch /clone/result/{id} for the audio."""
+    """Poll a clone job. Returns status plus done/total chunk counts so the
+    client can show a progress bar. On success, fetch /clone/result/{id}."""
     job = _clone_jobs.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Unknown job id.")
-    return {"status": job["status"], "error": job["error"]}
+    return {
+        "status": job["status"],
+        "error": job["error"],
+        "done": job.get("done", 0),
+        "total": job.get("total", 0),
+    }
 
 
 @app.get("/clone/result/{job_id}")

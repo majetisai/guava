@@ -11,7 +11,7 @@ import {
 
 type Phase = "idle" | "working" | "done" | "error";
 
-const MAX_CHARS = 500;
+const MAX_CHARS = 3000;
 
 export default function ClonePage() {
   // consent gate — nothing clones until this is checked
@@ -26,6 +26,7 @@ export default function ClonePage() {
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [elapsed, setElapsed] = useState(0);
+  const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [resultUrl, setResultUrl] = useState("");
   const [error, setError] = useState("");
 
@@ -207,9 +208,13 @@ export default function ClonePage() {
     setError("");
     setResultUrl("");
     setElapsed(0);
+    setProgress({ done: 0, total: 0 });
     try {
       const jobId = await startClone(file, text, language, fileName || "reference.wav");
-      const url = await waitForClone(jobId, setElapsed);
+      const url = await waitForClone(jobId, (sec, done, total) => {
+        setElapsed(sec);
+        setProgress({ done, total });
+      });
       setResultUrl(url);
       setPhase("done");
     } catch (e) {
@@ -360,6 +365,10 @@ export default function ClonePage() {
             {text.length} / {MAX_CHARS}
           </span>
         </div>
+        <p className="mt-1 text-xs text-gray-400">
+          On CPU, longer text takes longer — it generates sentence by sentence
+          so you can watch the progress.
+        </p>
 
         <button
           onClick={run}
@@ -370,11 +379,33 @@ export default function ClonePage() {
         </button>
 
         {phase === "working" && (
-          <p className="mt-3 text-sm text-amber-600">
-            Generating… cloning is slow on CPU, this can take a minute or two
-            {elapsed > 0 ? ` (${elapsed}s)` : ""}. The first run also downloads
-            the model.
-          </p>
+          <div className="mt-4">
+            {/* Sentence-by-sentence progress. total stays 0 until the first
+                chunk reports, e.g. during model download on the first run. */}
+            {progress.total > 0 ? (
+              <>
+                <div className="mb-1 flex items-center justify-between text-xs text-gray-500">
+                  <span>
+                    Generating sentence {progress.done} of {progress.total}
+                  </span>
+                  <span>{elapsed}s</span>
+                </div>
+                <div className="h-2 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-800">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-pink-500 to-purple-500 transition-[width] duration-300"
+                    style={{
+                      width: `${Math.round((progress.done / progress.total) * 100)}%`,
+                    }}
+                  />
+                </div>
+              </>
+            ) : (
+              <p className="text-sm text-amber-600">
+                Preparing… the first run downloads the model, which can take a
+                couple of minutes{elapsed > 0 ? ` (${elapsed}s)` : ""}.
+              </p>
+            )}
+          </div>
         )}
         {phase === "error" && <p className="mt-3 text-sm text-red-600">{error}</p>}
       </div>

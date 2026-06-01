@@ -40,9 +40,14 @@ export async function startClone(
 
 export type CloneStatus = "running" | "completed" | "failed";
 
-export async function getCloneStatus(
-  jobId: string,
-): Promise<{ status: CloneStatus; error: string | null }> {
+export type CloneProgress = {
+  status: CloneStatus;
+  error: string | null;
+  done: number;
+  total: number;
+};
+
+export async function getCloneStatus(jobId: string): Promise<CloneProgress> {
   const res = await fetch(`${BASE}/clone/status/${jobId}`);
   if (!res.ok) throw new Error(`Status check failed (${res.status})`);
   return res.json();
@@ -53,17 +58,18 @@ export function cloneResultUrl(jobId: string): string {
 }
 
 // Poll until the job finishes (or fails). Resolves with the audio URL.
+// onTick reports elapsed seconds plus how many sentence-chunks are done.
 export async function waitForClone(
   jobId: string,
-  onTick?: (elapsedSec: number) => void,
+  onTick?: (elapsedSec: number, done: number, total: number) => void,
 ): Promise<string> {
   const start = Date.now();
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    const { status, error } = await getCloneStatus(jobId);
+    const { status, error, done, total } = await getCloneStatus(jobId);
     if (status === "completed") return cloneResultUrl(jobId);
     if (status === "failed") throw new Error(error || "Cloning failed.");
-    onTick?.(Math.floor((Date.now() - start) / 1000));
+    onTick?.(Math.floor((Date.now() - start) / 1000), done, total);
     await new Promise((r) => setTimeout(r, 2000));
   }
 }

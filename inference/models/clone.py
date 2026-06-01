@@ -52,20 +52,43 @@ def _model():
     return TTS("tts_models/multilingual/multi-dataset/xtts_v2").to("cpu")
 
 
+def _split_sentences(text: str) -> list[str]:
+    """Split text into sentence-ish chunks so long input can be generated piece
+    by piece (with progress) and stitched back together. Splits on . ! ? and
+    newlines, keeping the delimiter."""
+    import re
+
+    parts = re.split(r"(?<=[.!?])\s+|\n+", text.strip())
+    return [p.strip() for p in parts if p.strip()]
+
+
 def clone_speak(
     text: str,
     reference_audio_path: str,
     language: str = "en",
+    on_progress=None,
 ) -> bytes:
     """Generate `text` spoken in the voice from `reference_audio_path`.
-    Returns WAV bytes."""
-    wav = _model().tts(
-        text=text,
-        speaker_wav=reference_audio_path,
-        language=language,
-    )
 
-    audio = np.asarray(wav, dtype=np.float32)
+    Long text is split into sentences and generated one at a time. `on_progress`,
+    if given, is called as on_progress(done, total) after each chunk so callers
+    can report a progress bar. Returns the concatenated WAV bytes."""
+    model = _model()
+    chunks = _split_sentences(text) or [text]
+    total = len(chunks)
+
+    audio_parts: list[np.ndarray] = []
+    for i, chunk in enumerate(chunks, start=1):
+        wav = model.tts(
+            text=chunk,
+            speaker_wav=reference_audio_path,
+            language=language,
+        )
+        audio_parts.append(np.asarray(wav, dtype=np.float32))
+        if on_progress:
+            on_progress(i, total)
+
+    audio = np.concatenate(audio_parts) if audio_parts else np.zeros(0, np.float32)
     buf = io.BytesIO()
     sf.write(buf, audio, SAMPLE_RATE, format="WAV")
     buf.seek(0)
