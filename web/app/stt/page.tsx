@@ -38,8 +38,12 @@ export default function SttPage() {
 
   // recording
   const [recording, setRecording] = useState(false);
+  const [mics, setMics] = useState<MediaDeviceInfo[]>([]);
+  const [micId, setMicId] = useState<string>("");
+  const [level, setLevel] = useState(0); // live input level 0..1
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const meterRef = useRef<{ ctx: AudioContext; raf: number } | null>(null);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const warmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -52,6 +56,33 @@ export default function SttPage() {
     getLanguages()
       .then(setLanguages)
       .catch(() => setLanguages({ en: "English" }));
+  }, []);
+
+  // Enumerate microphones so the user can pick the right input device.
+  // Labels are only populated after mic permission is granted, so we list
+  // again whenever devices change.
+  useEffect(() => {
+    if (!navigator.mediaDevices?.enumerateDevices) return;
+    const refresh = () =>
+      navigator.mediaDevices
+        .enumerateDevices()
+        .then((devs) =>
+          setMics(
+            devs.filter(
+              (d) =>
+                d.kind === "audioinput" &&
+                // drop Chrome's virtual "default"/"communications" duplicates;
+                // we provide our own "System default" entry
+                d.deviceId !== "default" &&
+                d.deviceId !== "communications",
+            ),
+          )
+        )
+        .catch(() => {});
+    refresh();
+    navigator.mediaDevices.addEventListener?.("devicechange", refresh);
+    return () =>
+      navigator.mediaDevices.removeEventListener?.("devicechange", refresh);
   }, []);
 
   // Make the current file playable.
@@ -73,30 +104,132 @@ export default function SttPage() {
     setError("");
   }
 
+  // Drive a live input-level meter from the mic stream using Web Audio.
+  function startMeter(stream: MediaStream) {
+    try {
+      const Ctx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext })
+          .webkitAudioContext;
+      const ctx = new Ctx();
+      const src = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      src.connect(analyser);
+      const data = new Uint8Array(analyser.fftSize);
+
+      const tick = () => {
+        analyser.getByteTimeDomainData(data);
+        // RMS around the 128 midpoint -> 0..1
+        let sum = 0;
+        for (const v of data) {
+          const d = (v - 128) / 128;
+          sum += d * d;
+        }
+        const rms = Math.sqrt(sum / data.length);
+        setLevel(Math.min(1, rms * 3));
+        const raf = requestAnimationFrame(tick);
+        if (meterRef.current) meterRef.current.raf = raf;
+      };
+      const raf = requestAnimationFrame(tick);
+      meterRef.current = { ctx, raf };
+    } catch {
+      // meter is a nice-to-have; ignore if Web Audio is unavailable
+    }
+  }
+
+  function stopMeter() {
+    if (meterRef.current) {
+      cancelAnimationFrame(meterRef.current.raf);
+      void meterRef.current.ctx.close();
+      meterRef.current = null;
+    }
+    setLevel(0);
+  }
+
   async function toggleRecording() {
     if (recording) {
       recorderRef.current?.stop();
       return;
     }
+    // getUserMedia only exists in secure contexts (https or localhost).
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError(
+        "Recording needs a secure context (https or localhost) and a browser that supports it.",
+      );
+      return;
+    }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Use the chosen mic if one is selected, else the system default.
+      const constraints: MediaStreamConstraints = {
+        audio: micId ? { deviceId: { exact: micId } } : true,
+      };
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+
+      // Refresh device labels (now that permission is granted) and remember
+      // which device we actually got.
+      navigator.mediaDevices
+        .enumerateDevices()
+        .then((devs) =>
+          setMics(
+            devs.filter(
+              (d) =>
+                d.kind === "audioinput" &&
+                // drop Chrome's virtual "default"/"communications" duplicates;
+                // we provide our own "System default" entry
+                d.deviceId !== "default" &&
+                d.deviceId !== "communications",
+            ),
+          )
+        )
+        .catch(() => {});
+      const track = stream.getAudioTracks()[0];
+      const usedId = track?.getSettings().deviceId;
+      if (usedId && !micId) setMicId(usedId);
+
+      // Live level meter so the user can see sound is coming in.
+      startMeter(stream);
+
       const rec = new MediaRecorder(stream);
       chunksRef.current = [];
-      rec.ondataavailable = (e) => e.data.size && chunksRef.current.push(e.data);
+      rec.ondataavailable = (e) => {
+        if (e.data.size) chunksRef.current.push(e.data);
+      };
       rec.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+        const blob = new Blob(chunksRef.current, {
+          type: rec.mimeType || "audio/webm",
+        });
+        stream.getTracks().forEach((t) => t.stop());
+        stopMeter();
+        setRecording(false);
+        if (blob.size === 0) {
+          setError("Recording captured no audio. Check that the right mic is selected and not muted.");
+          return;
+        }
         setFile(blob);
-        setFileName("recording.webm");
+        setFileName(`recording.${(rec.mimeType.split("/")[1] || "webm").split(";")[0]}`);
         setPhase("idle");
         setResult(null);
-        stream.getTracks().forEach((t) => t.stop());
-        setRecording(false);
+        setError("");
       };
       recorderRef.current = rec;
-      rec.start();
+      // Pass a timeslice so ondataavailable fires periodically — more reliable
+      // than waiting for stop() across browsers.
+      rec.start(250);
+      setError("");
       setRecording(true);
-    } catch {
-      setError("Couldn't access the microphone. Check browser permissions.");
+    } catch (e) {
+      // Surface the real reason so the user (and we) can tell what failed.
+      const name = e instanceof DOMException ? e.name : "";
+      const msg =
+        name === "NotAllowedError"
+          ? "Microphone permission was denied. Allow mic access in your browser's site settings (click the 🔒 in the address bar), then try again."
+          : name === "NotFoundError"
+            ? "No microphone was found. Check that one is connected and enabled."
+            : name === "NotReadableError"
+              ? "The microphone is in use by another app. Close it and try again."
+              : `Couldn't access the microphone${name ? ` (${name})` : ""}.`;
+      setError(msg);
     }
   }
 
@@ -201,6 +334,47 @@ export default function SttPage() {
           </button>
         </div>
 
+        {/* Mic picker + live input level. The picker only shows when there's
+            more than one mic — with a single device it's just clutter. The
+            level meter always shows while recording so the user can confirm
+            sound is coming in. */}
+        {(mics.length > 1 || recording) && (
+          <div className="mt-3 flex flex-wrap items-center gap-3 text-xs">
+            {mics.length > 1 && (
+              <label className="flex items-center gap-2">
+                <span className="text-gray-500">Mic</span>
+                <select
+                  value={micId}
+                  onChange={(e) => setMicId(e.target.value)}
+                  disabled={recording}
+                  className="max-w-56 rounded-md border border-gray-300 bg-transparent px-2 py-1 disabled:opacity-50 dark:border-gray-700"
+                >
+                  <option value="">System default</option>
+                  {mics.map((m, i) => (
+                    <option key={m.deviceId} value={m.deviceId}>
+                      {m.label || `Microphone ${i + 1}`}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {recording && (
+              <div className="flex items-center gap-2">
+                <span className="text-gray-500">Level</span>
+                <div className="h-2 w-32 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-800">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-green-400 to-pink-500 transition-[width] duration-75"
+                    style={{ width: `${Math.round(level * 100)}%` }}
+                  />
+                </div>
+                {level < 0.02 && (
+                  <span className="text-amber-600">no sound — check mic</span>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Player */}
         {audioUrl && (
           <div className="mt-4">
@@ -209,6 +383,19 @@ export default function SttPage() {
               ref={audioRef}
               src={audioUrl}
               controls
+              onLoadedMetadata={(e) => {
+                // Chrome reports duration:Infinity for MediaRecorder webm blobs,
+                // which breaks the scrubber. Forcing a seek makes it compute the
+                // real duration; we then reset to the start.
+                const a = e.target as HTMLAudioElement;
+                if (a.duration === Infinity) {
+                  a.currentTime = 1e101;
+                  a.ontimeupdate = () => {
+                    a.ontimeupdate = null;
+                    a.currentTime = 0;
+                  };
+                }
+              }}
               onTimeUpdate={(e) =>
                 onTimeUpdate((e.target as HTMLAudioElement).currentTime)
               }

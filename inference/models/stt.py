@@ -44,7 +44,10 @@ def transcribe(
         audio_path,
         language=language,  # None -> auto-detect
         task=task,
-        vad_filter=True,    # skip long silences, fewer hallucinations
+        # VAD with a low threshold: trims silence without dropping quiet or
+        # short speech (an aggressive filter can blank out brief clips).
+        vad_filter=True,
+        vad_parameters={"threshold": 0.2, "min_silence_duration_ms": 500},
     )
 
     text_parts: list[str] = []

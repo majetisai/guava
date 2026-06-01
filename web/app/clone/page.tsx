@@ -31,13 +31,41 @@ export default function ClonePage() {
 
   // recording
   const [recording, setRecording] = useState(false);
+  const [mics, setMics] = useState<MediaDeviceInfo[]>([]);
+  const [micId, setMicId] = useState("");
+  const [level, setLevel] = useState(0);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const meterRef = useRef<{ ctx: AudioContext; raf: number } | null>(null);
 
   useEffect(() => {
     getCloneLanguages()
       .then(setLanguages)
       .catch(() => setLanguages({ en: "English" }));
+  }, []);
+
+  // Enumerate microphones (filtering Chrome's virtual default duplicates) so
+  // the user can choose the right input device.
+  useEffect(() => {
+    if (!navigator.mediaDevices?.enumerateDevices) return;
+    const refresh = () =>
+      navigator.mediaDevices
+        .enumerateDevices()
+        .then((devs) =>
+          setMics(
+            devs.filter(
+              (d) =>
+                d.kind === "audioinput" &&
+                d.deviceId !== "default" &&
+                d.deviceId !== "communications",
+            ),
+          ),
+        )
+        .catch(() => {});
+    refresh();
+    navigator.mediaDevices.addEventListener?.("devicechange", refresh);
+    return () =>
+      navigator.mediaDevices.removeEventListener?.("devicechange", refresh);
   }, []);
 
   useEffect(() => {
@@ -57,29 +85,119 @@ export default function ClonePage() {
     setResultUrl("");
   }
 
+  // Live input-level meter from the mic stream.
+  function startMeter(stream: MediaStream) {
+    try {
+      const Ctx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext })
+          .webkitAudioContext;
+      const ctx = new Ctx();
+      const src = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      src.connect(analyser);
+      const data = new Uint8Array(analyser.fftSize);
+      const tick = () => {
+        analyser.getByteTimeDomainData(data);
+        let sum = 0;
+        for (const v of data) {
+          const d = (v - 128) / 128;
+          sum += d * d;
+        }
+        setLevel(Math.min(1, Math.sqrt(sum / data.length) * 3));
+        const raf = requestAnimationFrame(tick);
+        if (meterRef.current) meterRef.current.raf = raf;
+      };
+      const raf = requestAnimationFrame(tick);
+      meterRef.current = { ctx, raf };
+    } catch {
+      // meter is optional
+    }
+  }
+
+  function stopMeter() {
+    if (meterRef.current) {
+      cancelAnimationFrame(meterRef.current.raf);
+      void meterRef.current.ctx.close();
+      meterRef.current = null;
+    }
+    setLevel(0);
+  }
+
   async function toggleRecording() {
     if (recording) {
       recorderRef.current?.stop();
       return;
     }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError(
+        "Recording needs a secure context (https or localhost) and a supported browser.",
+      );
+      return;
+    }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const constraints: MediaStreamConstraints = {
+        audio: micId ? { deviceId: { exact: micId } } : true,
+      };
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+
+      // Refresh labels now that permission is granted; remember the device used.
+      navigator.mediaDevices
+        .enumerateDevices()
+        .then((devs) =>
+          setMics(
+            devs.filter(
+              (d) =>
+                d.kind === "audioinput" &&
+                d.deviceId !== "default" &&
+                d.deviceId !== "communications",
+            ),
+          ),
+        )
+        .catch(() => {});
+      const usedId = stream.getAudioTracks()[0]?.getSettings().deviceId;
+      if (usedId && !micId) setMicId(usedId);
+
+      startMeter(stream);
+
       const rec = new MediaRecorder(stream);
       chunksRef.current = [];
-      rec.ondataavailable = (e) => e.data.size && chunksRef.current.push(e.data);
+      rec.ondataavailable = (e) => {
+        if (e.data.size) chunksRef.current.push(e.data);
+      };
       rec.onstop = () => {
-        setFile(new Blob(chunksRef.current, { type: "audio/webm" }));
+        const blob = new Blob(chunksRef.current, {
+          type: rec.mimeType || "audio/webm",
+        });
+        stream.getTracks().forEach((t) => t.stop());
+        stopMeter();
+        setRecording(false);
+        if (blob.size === 0) {
+          setError("Recording captured no audio. Check that the right mic is selected and not muted.");
+          return;
+        }
+        setFile(blob);
         setFileName("reference.webm");
         setPhase("idle");
         setResultUrl("");
-        stream.getTracks().forEach((t) => t.stop());
-        setRecording(false);
+        setError("");
       };
       recorderRef.current = rec;
-      rec.start();
+      rec.start(250);
+      setError("");
       setRecording(true);
-    } catch {
-      setError("Couldn't access the microphone. Check browser permissions.");
+    } catch (e) {
+      const name = e instanceof DOMException ? e.name : "";
+      const msg =
+        name === "NotAllowedError"
+          ? "Microphone permission was denied. Allow mic access in your browser's site settings, then try again."
+          : name === "NotFoundError"
+            ? "No microphone was found. Check that one is connected and enabled."
+            : name === "NotReadableError"
+              ? "The microphone is in use by another app. Close it and try again."
+              : `Couldn't access the microphone${name ? ` (${name})` : ""}.`;
+      setError(msg);
     }
   }
 
@@ -155,11 +273,65 @@ export default function ClonePage() {
             {recording ? "Stop" : "🎙️ Record"}
           </button>
         </div>
+
+        {/* Mic picker (only with 2+ mics) + live level while recording */}
+        {(mics.length > 1 || recording) && (
+          <div className="mt-3 flex flex-wrap items-center gap-3 text-xs">
+            {mics.length > 1 && (
+              <label className="flex items-center gap-2">
+                <span className="text-gray-500">Mic</span>
+                <select
+                  value={micId}
+                  onChange={(e) => setMicId(e.target.value)}
+                  disabled={recording}
+                  className="max-w-56 rounded-md border border-gray-300 bg-transparent px-2 py-1 disabled:opacity-50 dark:border-gray-700"
+                >
+                  <option value="">System default</option>
+                  {mics.map((m, i) => (
+                    <option key={m.deviceId} value={m.deviceId}>
+                      {m.label || `Microphone ${i + 1}`}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {recording && (
+              <div className="flex items-center gap-2">
+                <span className="text-gray-500">Level</span>
+                <div className="h-2 w-32 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-800">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-green-400 to-pink-500 transition-[width] duration-75"
+                    style={{ width: `${Math.round(level * 100)}%` }}
+                  />
+                </div>
+                {level < 0.02 && (
+                  <span className="text-amber-600">no sound — check mic</span>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         <p className="mt-2 text-xs text-gray-500">
           A clean 6–15 second clip works best.
         </p>
         {refUrl && (
-          <audio src={refUrl} controls className="mt-3 w-full" />
+          <audio
+            src={refUrl}
+            controls
+            onLoadedMetadata={(e) => {
+              // Fix Chrome's duration:Infinity bug for recorded webm blobs.
+              const a = e.target as HTMLAudioElement;
+              if (a.duration === Infinity) {
+                a.currentTime = 1e101;
+                a.ontimeupdate = () => {
+                  a.ontimeupdate = null;
+                  a.currentTime = 0;
+                };
+              }
+            }}
+            className="mt-3 w-full"
+          />
         )}
 
         <p className="mt-6 mb-2 text-sm font-medium">2. What should it say?</p>
