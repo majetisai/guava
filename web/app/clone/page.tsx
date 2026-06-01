@@ -8,6 +8,7 @@ import {
   waitForClone,
   type LanguageMap,
 } from "@/lib/clone";
+import { DownloadButtons } from "@/components/DownloadButtons";
 
 type Phase = "idle" | "working" | "done" | "error";
 
@@ -414,14 +415,8 @@ export default function ClonePage() {
         <section className="mt-8">
           <h2 className="mb-3 text-lg font-medium">Cloned result</h2>
           <audio src={resultUrl} controls autoPlay className="w-full" />
-          <div className="mt-3">
-            <a
-              href={resultUrl}
-              download="guava-clone.wav"
-              className="inline-block rounded-md border border-gray-300 px-3 py-1.5 text-sm hover:border-pink-400 hover:text-pink-500 dark:border-gray-700"
-            >
-              Download .wav
-            </a>
+          <div className="mt-4">
+            <DownloadButtons audioUrl={resultUrl} baseName="guava-clone" />
           </div>
         </section>
       )}

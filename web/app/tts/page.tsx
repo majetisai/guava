@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { getVoices, synthesize, type VoiceMap } from "@/lib/tts";
+import { DownloadButtons } from "@/components/DownloadButtons";
 
 type Phase = "idle" | "working" | "warming" | "done" | "error";
 
@@ -132,14 +133,8 @@ export default function TtsPage() {
         <section className="mt-8">
           <h2 className="mb-3 text-lg font-medium">Result</h2>
           <audio src={audioUrl} controls autoPlay className="w-full" />
-          <div className="mt-3">
-            <a
-              href={audioUrl}
-              download="guava-speech.wav"
-              className="inline-block rounded-md border border-gray-300 px-3 py-1.5 text-sm hover:border-pink-400 hover:text-pink-500 dark:border-gray-700"
-            >
-              Download .wav
-            </a>
+          <div className="mt-4">
+            <DownloadButtons audioUrl={audioUrl} baseName="guava-speech" />
           </div>
         </section>
       )}

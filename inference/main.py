@@ -314,3 +314,50 @@ def clone_result(job_id: str) -> Response:
     if job["status"] != "completed" or job["audio"] is None:
         raise HTTPException(status_code=409, detail="Job not completed.")
     return Response(content=job["audio"], media_type="audio/wav")
+
+
+# --------------------------------------------------------------------------
+# Audio format conversion (so the UI can offer MP3 / M4A / FLAC downloads)
+# --------------------------------------------------------------------------
+
+# target format -> (ffmpeg args, mime type)
+_CONVERT_FORMATS = {
+    "mp3": (["-codec:a", "libmp3lame", "-q:a", "2", "-f", "mp3"], "audio/mpeg"),
+    "m4a": (["-codec:a", "aac", "-b:a", "192k", "-f", "ipod"], "audio/mp4"),
+    "flac": (["-codec:a", "flac", "-f", "flac"], "audio/flac"),
+    "ogg": (["-codec:a", "libvorbis", "-q:a", "5", "-f", "ogg"], "audio/ogg"),
+}
+
+
+@app.post("/convert")
+async def convert(audio: UploadFile = File(...), fmt: str = Form(...)) -> Response:
+    """Convert uploaded audio to another format with ffmpeg and return it.
+    Lets the frontend offer MP3/M4A/FLAC/OGG downloads of generated audio."""
+    import subprocess
+
+    fmt = fmt.lower()
+    if fmt not in _CONVERT_FORMATS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported format. Choose one of: {', '.join(_CONVERT_FORMATS)}.",
+        )
+
+    data = await audio.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty audio.")
+
+    args, mime = _CONVERT_FORMATS[fmt]
+    # Read input from stdin, write output to stdout — no temp files needed.
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", "pipe:0", *args, "pipe:1"]
+    try:
+        proc = subprocess.run(cmd, input=data, capture_output=True, timeout=120)
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="ffmpeg is not installed on the server.")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Conversion timed out.")
+
+    if proc.returncode != 0 or not proc.stdout:
+        msg = proc.stderr.decode("utf-8", "ignore")[:200] or "conversion failed"
+        raise HTTPException(status_code=500, detail=f"Conversion failed: {msg}")
+
+    return Response(content=proc.stdout, media_type=mime)
