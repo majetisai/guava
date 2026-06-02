@@ -8,15 +8,28 @@
 | Feature | Model | Status |
 |---------|-------|--------|
 | Speech → Text | faster-whisper | ✅ working |
-| Text → Speech | Kokoro | planned |
-| Voice Cloning | OpenVoice (with consent flow) | planned |
+| Text → Speech | Kokoro | ✅ working |
+| Voice Cloning | Kokoro + FreeVC (smooth) / XTTS-v2 (closest match) | ✅ working |
+
+Voice cloning offers two modes — a smooth Kokoro→FreeVC pipeline and a
+higher-fidelity XTTS-v2 path — and reports a speaker-similarity score so you can
+see how close the clone is. It has a consent gate and reads-aloud sample scripts.
 
 ## Architecture
 
 ```
 Next.js (web/) ──► FastAPI inference service (inference/)
-                        └─ faster-whisper · Kokoro · OpenVoice
+                        └─ faster-whisper · Kokoro · FreeVC · XTTS-v2
 ```
+
+## Evaluated but not included
+
+**Microsoft VibeVoice** — a more realistic TTS model. Tested it directly and
+shelved it: the lightweight realtime-0.5B isn't cleanly installable (its repo was
+disabled), and the available 1.5B model pins `transformers==4.51.3`, which
+hard-conflicts with Coqui (needs ≥4.57) — they can't share one environment, and
+1.5B is too heavy for CPU. A future GPU deployment could run it as an isolated
+service.
 
 The web app never calls a third-party AI API — every model runs in the
 inference service. Swapping a model means changing one wrapper, not the app.
