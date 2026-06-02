@@ -13,9 +13,11 @@ requests==2.34.2
 kokoro>=0.9.4
 soundfile>=0.12.1
 
-# Voice cloning (CPU) — Coqui XTTS-v2, zero-shot
+# Voice cloning (CPU) — Coqui XTTS-v2 + FreeVC (both in coqui-tts)
 coqui-tts==0.27.5
 torchaudio
 torchcodec
 # coqui needs the pre-5.0 transformers API (isin_mps_friendly)
 transformers==4.57.6
+# speaker-similarity scoring (how close the clone is to the reference)
+resemblyzer==0.1.4

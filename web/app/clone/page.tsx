@@ -25,10 +25,12 @@ export default function ClonePage() {
   const [languages, setLanguages] = useState<LanguageMap>({});
   const [language, setLanguage] = useState("en");
 
+  const [mode, setMode] = useState<"smooth" | "match">("smooth");
   const [phase, setPhase] = useState<Phase>("idle");
   const [elapsed, setElapsed] = useState(0);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [resultUrl, setResultUrl] = useState("");
+  const [similarity, setSimilarity] = useState<number | null>(null);
   const [error, setError] = useState("");
 
   // recording
@@ -208,15 +210,26 @@ export default function ClonePage() {
     setPhase("working");
     setError("");
     setResultUrl("");
+    setSimilarity(null);
     setElapsed(0);
     setProgress({ done: 0, total: 0 });
     try {
-      const jobId = await startClone(file, text, language, fileName || "reference.wav");
-      const url = await waitForClone(jobId, (sec, done, total) => {
-        setElapsed(sec);
-        setProgress({ done, total });
-      });
+      const jobId = await startClone(
+        file,
+        text,
+        language,
+        mode,
+        fileName || "reference.wav",
+      );
+      const { url, similarity: sim } = await waitForClone(
+        jobId,
+        (sec, done, total) => {
+          setElapsed(sec);
+          setProgress({ done, total });
+        },
+      );
       setResultUrl(url);
+      setSimilarity(sim);
       setPhase("done");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong.");
@@ -392,6 +405,37 @@ export default function ClonePage() {
           so you can watch the progress.
         </p>
 
+        {/* Mode: trade off smoothness vs. voice match */}
+        <p className="mt-6 mb-2 text-sm font-medium">3. Cloning mode</p>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <button
+            onClick={() => setMode("smooth")}
+            className={`flex-1 rounded-lg border p-3 text-left text-sm transition ${
+              mode === "smooth"
+                ? "border-pink-400 bg-pink-50 dark:bg-pink-950/20"
+                : "border-gray-200 hover:border-pink-300 dark:border-gray-800"
+            }`}
+          >
+            <span className="font-medium">✨ Smoothest</span>
+            <span className="mt-1 block text-xs text-gray-500">
+              Natural flow, clear speech. Voice match is moderate.
+            </span>
+          </button>
+          <button
+            onClick={() => setMode("match")}
+            className={`flex-1 rounded-lg border p-3 text-left text-sm transition ${
+              mode === "match"
+                ? "border-pink-400 bg-pink-50 dark:bg-pink-950/20"
+                : "border-gray-200 hover:border-pink-300 dark:border-gray-800"
+            }`}
+          >
+            <span className="font-medium">🎯 Closest match</span>
+            <span className="mt-1 block text-xs text-gray-500">
+              Stronger voice match. Slightly less smooth, slower.
+            </span>
+          </button>
+        </div>
+
         <button
           onClick={run}
           disabled={!canClone}
@@ -434,7 +478,10 @@ export default function ClonePage() {
 
       {phase === "done" && resultUrl && (
         <section className="mt-8">
-          <h2 className="mb-3 text-lg font-medium">Cloned result</h2>
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-lg font-medium">Cloned result</h2>
+            {similarity !== null && <SimilarityBadge score={similarity} />}
+          </div>
           <audio src={resultUrl} controls autoPlay className="w-full" />
           <div className="mt-4">
             <DownloadButtons audioUrl={resultUrl} baseName="guava-clone" />
@@ -442,5 +489,30 @@ export default function ClonePage() {
         </section>
       )}
     </main>
+  );
+}
+
+// Shows the speaker-similarity score (0-1) with a plain-language label, so the
+// user knows how close the clone is to their voice.
+function SimilarityBadge({ score }: { score: number }) {
+  const pct = Math.round(score * 100);
+  const { label, color } =
+    score >= 0.85
+      ? { label: "Excellent match", color: "text-green-600" }
+      : score >= 0.75
+        ? { label: "Strong match", color: "text-green-600" }
+        : score >= 0.65
+          ? { label: "Moderate match", color: "text-amber-600" }
+          : { label: "Weak match", color: "text-red-600" };
+  return (
+    <span
+      className="text-xs"
+      title="How closely the clone matches your reference voice (speaker-embedding similarity)"
+    >
+      <span className="text-gray-400">Voice match: </span>
+      <span className={`font-medium ${color}`}>
+        {pct}% · {label}
+      </span>
+    </span>
   );
 }

@@ -215,11 +215,10 @@ MAX_CLONE_CHARS = int(os.getenv("GUAVA_MAX_CLONE_CHARS", "3000"))
 _clone_jobs: dict[str, dict] = {}
 
 
-def _run_clone(job_id: str, text: str, ref_path: str, language: str) -> None:
-    """Background worker: generate the clone, store the result, clean up.
-    Updates the job's done/total counters so the client can show progress."""
+def _run_clone(job_id: str, text: str, ref_path: str, language: str, mode: str) -> None:
+    """Background worker: generate the clone, store result + similarity, clean up."""
     try:
-        from models.clone import clone_speak  # lazy import (loads XTTS-v2)
+        from models.clone import clone_speak  # lazy import (loads the models)
 
         def progress(done: int, total: int) -> None:
             job = _clone_jobs.get(job_id)
@@ -227,9 +226,16 @@ def _run_clone(job_id: str, text: str, ref_path: str, language: str) -> None:
                 job["done"] = done
                 job["total"] = total
 
-        wav = clone_speak(text, ref_path, language=language, on_progress=progress)
+        result = clone_speak(
+            text, ref_path, language=language, mode=mode, on_progress=progress
+        )
         job = _clone_jobs[job_id]
-        job.update(status="completed", audio=wav, error=None)
+        job.update(
+            status="completed",
+            audio=result["audio"],
+            similarity=result.get("similarity"),
+            error=None,
+        )
     except Exception as exc:
         job = _clone_jobs.get(job_id, {})
         job.update(status="failed", audio=None, error=str(exc))
@@ -253,10 +259,15 @@ async def clone(
     audio: UploadFile = File(...),
     text: str = Form(...),
     language: str = Form(default="en"),
+    mode: str = Form(default="smooth"),
 ) -> dict:
     """Start a voice-clone job. Returns a job id immediately; poll
     /clone/status/{id} for the result. Cloning is slow on CPU, so we don't
-    block the request."""
+    block the request.
+
+    mode: "smooth" (Kokoro+FreeVC, best flow) or "match" (XTTS, stronger voice)."""
+    if mode not in ("smooth", "match"):
+        raise HTTPException(status_code=400, detail="mode must be smooth or match.")
     text = text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Text is empty.")
@@ -285,15 +296,16 @@ async def clone(
         "error": None,
         "done": 0,
         "total": 0,
+        "similarity": None,
     }
-    background.add_task(_run_clone, job_id, text, ref_path, language)
+    background.add_task(_run_clone, job_id, text, ref_path, language, mode)
     return {"jobId": job_id, "status": "running"}
 
 
 @app.get("/clone/status/{job_id}")
 def clone_status(job_id: str) -> dict:
-    """Poll a clone job. Returns status plus done/total chunk counts so the
-    client can show a progress bar. On success, fetch /clone/result/{id}."""
+    """Poll a clone job. Returns status, progress, and (on success) the speaker
+    similarity score. Fetch /clone/result/{id} for the audio."""
     job = _clone_jobs.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Unknown job id.")
@@ -302,6 +314,7 @@ def clone_status(job_id: str) -> dict:
         "error": job["error"],
         "done": job.get("done", 0),
         "total": job.get("total", 0),
+        "similarity": job.get("similarity"),
     }
 
 

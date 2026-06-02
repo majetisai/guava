@@ -12,16 +12,20 @@ export async function getCloneLanguages(): Promise<LanguageMap> {
   return body.languages as LanguageMap;
 }
 
+export type CloneMode = "smooth" | "match";
+
 export async function startClone(
   referenceAudio: Blob,
   text: string,
   language: string,
+  mode: CloneMode = "smooth",
   filename = "reference.wav",
 ): Promise<string> {
   const form = new FormData();
   form.append("audio", referenceAudio, filename);
   form.append("text", text);
   form.append("language", language);
+  form.append("mode", mode);
 
   const res = await fetch(`${BASE}/clone`, { method: "POST", body: form });
   if (!res.ok) {
@@ -45,6 +49,7 @@ export type CloneProgress = {
   error: string | null;
   done: number;
   total: number;
+  similarity: number | null;
 };
 
 export async function getCloneStatus(jobId: string): Promise<CloneProgress> {
@@ -57,17 +62,18 @@ export function cloneResultUrl(jobId: string): string {
   return `${BASE}/clone/result/${jobId}`;
 }
 
-// Poll until the job finishes (or fails). Resolves with the audio URL.
-// onTick reports elapsed seconds plus how many sentence-chunks are done.
+// Poll until the job finishes (or fails). Resolves with the audio URL and the
+// speaker-similarity score. onTick reports elapsed seconds + chunk progress.
 export async function waitForClone(
   jobId: string,
   onTick?: (elapsedSec: number, done: number, total: number) => void,
-): Promise<string> {
+): Promise<{ url: string; similarity: number | null }> {
   const start = Date.now();
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    const { status, error, done, total } = await getCloneStatus(jobId);
-    if (status === "completed") return cloneResultUrl(jobId);
+    const { status, error, done, total, similarity } = await getCloneStatus(jobId);
+    if (status === "completed")
+      return { url: cloneResultUrl(jobId), similarity };
     if (status === "failed") throw new Error(error || "Cloning failed.");
     onTick?.(Math.floor((Date.now() - start) / 1000), done, total);
     await new Promise((r) => setTimeout(r, 2000));
