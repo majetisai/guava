@@ -20,8 +20,13 @@ venv/
 *.bin
 *.onnx
 *.pt
+*.pth
 *.ckpt
+*.safetensors
 models_cache/
+# Wav2Lip weights (downloaded on setup, not committed)
+inference/wav2lip_src/checkpoints/*.pth
+inference/wav2lip_src/face_detection/detection/sfd/*.pth
 
 # OS / editor
 .DS_Store

@@ -10,6 +10,13 @@
 | Speech → Text | faster-whisper | ✅ working |
 | Text → Speech | Kokoro | ✅ working |
 | Voice Cloning | Kokoro + FreeVC (smooth) / XTTS-v2 (closest match) | ✅ working |
+| Lip Sync | Wav2Lip | ✅ working |
+
+Lip Sync takes a face (video or photo) + audio and produces a video with the
+lips synced to the audio — chain it with a cloned voice for a full talking video.
+Wav2Lip weights aren't committed; download them on setup:
+`inference/wav2lip_src/checkpoints/wav2lip_gan.pth` and
+`inference/wav2lip_src/face_detection/detection/sfd/s3fd.pth`.
 
 Voice cloning offers two modes — a smooth Kokoro→FreeVC pipeline and a
 higher-fidelity XTTS-v2 path — and reports a speaker-similarity score so you can
@@ -19,7 +26,7 @@ see how close the clone is. It has a consent gate and reads-aloud sample scripts
 
 ```
 Next.js (web/) ──► FastAPI inference service (inference/)
-                        └─ faster-whisper · Kokoro · FreeVC · XTTS-v2
+                        └─ faster-whisper · Kokoro · FreeVC · XTTS-v2 · Wav2Lip
 ```
 
 ## Evaluated but not included

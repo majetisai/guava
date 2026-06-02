@@ -5,10 +5,10 @@ A small FastAPI app that wraps the self-hosted voice models. Runs locally for
 development and deploys to a free Hugging Face Space (CPU) for the live demo.
 
 Endpoints (added per feature):
-  POST /stt    audio -> text (+ SRT, VTT)   [live]
-  POST /tts    text  -> audio (WAV)         [live]
-  POST /clone  sample + text -> job id       [live, async]
-  GET  /clone/status/{id} -> job status / audio
+  POST /stt      audio -> text (+ SRT, VTT)   [live]
+  POST /tts      text  -> audio (WAV)         [live]
+  POST /clone    sample + text -> job id       [live, async]
+  POST /lipsync  face video/photo + audio -> job id  [live, async]
 """
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ def health() -> Health:
         status="ok",
         service="guava-inference",
         version="0.1.0",
-        features={"stt": True, "tts": True, "clone": True},
+        features={"stt": True, "tts": True, "clone": True, "lipsync": True},
     )
 
 
@@ -374,3 +374,84 @@ async def convert(audio: UploadFile = File(...), fmt: str = Form(...)) -> Respon
         raise HTTPException(status_code=500, detail=f"Conversion failed: {msg}")
 
     return Response(content=proc.stdout, media_type=mime)
+
+
+# --------------------------------------------------------------------------
+# Lip-sync (Wav2Lip) — async; takes a face (video/photo) + audio -> video
+# --------------------------------------------------------------------------
+
+# face uploads can be bigger than audio (it's video); allow more headroom
+MAX_FACE_BYTES = int(os.getenv("GUAVA_MAX_FACE_MB", "50")) * 1024 * 1024
+
+_lipsync_jobs: dict[str, dict] = {}
+
+
+def _run_lipsync(job_id: str, face_path: str, audio_path: str) -> None:
+    """Background worker: run Wav2Lip, store the video, clean up the inputs."""
+    try:
+        from models.lipsync import lipsync  # lazy import
+
+        video = lipsync(face_path, audio_path)
+        job = _lipsync_jobs[job_id]
+        job.update(status="completed", video=video, error=None)
+    except Exception as exc:
+        job = _lipsync_jobs.get(job_id, {})
+        job.update(status="failed", video=None, error=str(exc))
+        _lipsync_jobs[job_id] = job
+    finally:
+        for p in (face_path, audio_path):
+            if p and os.path.exists(p):
+                os.remove(p)
+
+
+@app.post("/lipsync")
+async def lipsync_start(
+    background: BackgroundTasks,
+    face: UploadFile = File(...),
+    audio: UploadFile = File(...),
+) -> dict:
+    """Start a lip-sync job: `face` is a video clip or a photo, `audio` is the
+    speech to sync onto it. Returns a job id; poll /lipsync/status/{id}."""
+    face_data = await face.read()
+    if not face_data:
+        raise HTTPException(status_code=400, detail="Empty face file.")
+    if len(face_data) > MAX_FACE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Face file too large. Max {MAX_FACE_BYTES // (1024 * 1024)}MB.",
+        )
+    audio_data = await audio.read()
+    if not audio_data:
+        raise HTTPException(status_code=400, detail="Empty audio file.")
+
+    face_suffix = os.path.splitext(face.filename or "")[1] or ".mp4"
+    fd, face_path = tempfile.mkstemp(suffix=face_suffix)
+    with os.fdopen(fd, "wb") as f:
+        f.write(face_data)
+    audio_suffix = os.path.splitext(audio.filename or "")[1] or ".wav"
+    fd, audio_path = tempfile.mkstemp(suffix=audio_suffix)
+    with os.fdopen(fd, "wb") as f:
+        f.write(audio_data)
+
+    job_id = uuid.uuid4().hex
+    _lipsync_jobs[job_id] = {"status": "running", "video": None, "error": None}
+    background.add_task(_run_lipsync, job_id, face_path, audio_path)
+    return {"jobId": job_id, "status": "running"}
+
+
+@app.get("/lipsync/status/{job_id}")
+def lipsync_status(job_id: str) -> dict:
+    job = _lipsync_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Unknown job id.")
+    return {"status": job["status"], "error": job["error"]}
+
+
+@app.get("/lipsync/result/{job_id}")
+def lipsync_result(job_id: str) -> Response:
+    job = _lipsync_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Unknown job id.")
+    if job["status"] != "completed" or job.get("video") is None:
+        raise HTTPException(status_code=409, detail="Job not completed.")
+    return Response(content=job["video"], media_type="video/mp4")

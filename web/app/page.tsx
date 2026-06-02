@@ -19,6 +19,12 @@ const features = [
     blurb: "Clone a voice from a short sample — with a real consent flow.",
     status: "Live",
   },
+  {
+    href: "/lipsync",
+    title: "Lip Sync",
+    blurb: "Sync a face video or photo to any audio — a full talking video.",
+    status: "Live",
+  },
 ];
 
 export default function Home() {
@@ -35,7 +41,7 @@ export default function Home() {
         open-source models, not someone else&apos;s API.
       </p>
 
-      <div className="mt-12 grid gap-4 sm:grid-cols-3">
+      <div className="mt-12 grid gap-4 sm:grid-cols-2">
         {features.map((f) => (
           <Link
             key={f.href}
