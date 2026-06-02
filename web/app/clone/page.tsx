@@ -14,6 +14,24 @@ type Phase = "idle" | "working" | "done" | "error";
 
 const MAX_CHARS = 3000;
 
+// Phonetically rich passages to read while recording the reference. Covering a
+// wide range of sounds gives the cloning model a fuller picture of the voice,
+// which improves the match. These are classics designed for exactly this.
+const SAMPLE_SCRIPTS = [
+  {
+    name: "Rainbow Passage",
+    text: "When the sunlight strikes raindrops in the air, they act as a prism and form a rainbow. The rainbow is a division of white light into many beautiful colors. These take the shape of a long round arch, with its path high above, and its two ends apparently beyond the horizon.",
+  },
+  {
+    name: "Quick & varied",
+    text: "The quick brown fox jumps over the lazy dog. She sells seashells by the seashore. How much wood would a woodchuck chuck? My voice is my own, clear and natural, with my real accent and rhythm as I speak these everyday words.",
+  },
+  {
+    name: "Numbers & names",
+    text: "On Monday the third, we drove about ninety-five miles to visit Aunt Priya and Uncle James. The weather was bright and warm, around seventy degrees, and the whole journey took just over two hours, with a short stop for coffee.",
+  },
+];
+
 export default function ClonePage() {
   // consent gate — nothing clones until this is checked
   const [consent, setConsent] = useState(false);
@@ -21,6 +39,8 @@ export default function ClonePage() {
   const [file, setFile] = useState<Blob | null>(null);
   const [fileName, setFileName] = useState("");
   const [refUrl, setRefUrl] = useState("");
+  const [scriptIdx, setScriptIdx] = useState(0); // which sample script to read
+  const [showScript, setShowScript] = useState(false);
   const [text, setText] = useState("");
   const [languages, setLanguages] = useState<LanguageMap>({});
   const [language, setLanguage] = useState("en");
@@ -291,6 +311,43 @@ export default function ClonePage() {
           >
             {recording ? "Stop" : "🎙️ Record"}
           </button>
+        </div>
+
+        {/* Sample script: reading a phonetically rich passage gives the model a
+            fuller picture of the voice, improving the clone match. */}
+        <div className="mt-3">
+          <button
+            onClick={() => setShowScript((v) => !v)}
+            className="text-xs text-pink-500 hover:underline"
+          >
+            {showScript ? "Hide sample script" : "✨ Need something to read? Use a sample script"}
+          </button>
+          {showScript && (
+            <div className="mt-2 rounded-lg border border-gray-200 p-3 dark:border-gray-800">
+              <div className="mb-2 flex flex-wrap gap-1.5">
+                {SAMPLE_SCRIPTS.map((s, i) => (
+                  <button
+                    key={s.name}
+                    onClick={() => setScriptIdx(i)}
+                    className={`rounded-full px-2.5 py-1 text-xs transition ${
+                      scriptIdx === i
+                        ? "bg-pink-500 text-white"
+                        : "border border-gray-300 text-gray-500 hover:border-pink-400 dark:border-gray-700"
+                    }`}
+                  >
+                    {s.name}
+                  </button>
+                ))}
+              </div>
+              <p className="text-sm leading-relaxed text-gray-700 dark:text-gray-300">
+                {SAMPLE_SCRIPTS[scriptIdx].text}
+              </p>
+              <p className="mt-2 text-xs text-gray-400">
+                Press Record and read this aloud naturally in your own accent for
+                the best clone. Covers a wide range of sounds.
+              </p>
+            </div>
+          )}
         </div>
 
         {/* Mic picker (only with 2+ mics) + live level while recording */}
