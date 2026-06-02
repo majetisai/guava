@@ -98,25 +98,41 @@ def _kokoro_speak(text: str, lang_code: str, voice: str) -> np.ndarray:
     return out
 
 
+def _decode_to_wav(path: str) -> str:
+    """Decode any input (webm/mp3/m4a/…) to a clean mono WAV via ffmpeg. FreeVC
+    and soundfile can't reliably read compressed formats like webm, so we always
+    normalize the container first. Returns a temp WAV path."""
+    import subprocess
+
+    fd, out = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+         "-i", path, "-ac", "1", "-ar", str(SAMPLE_RATE), out],
+        check=True,
+    )
+    return out
+
+
 def _prepare_reference(path: str) -> str:
-    """Clean the reference clip: mono, trim silence, normalize volume. A cleaner
-    reference gives the converter a clearer voice to copy. Best-effort."""
+    """Decode the reference to WAV, then clean it: trim silence + normalize
+    volume so the converter has a clear, well-leveled voice to copy."""
+    wav_path = _decode_to_wav(path)
     try:
         import librosa
 
-        y, _ = librosa.load(path, sr=SAMPLE_RATE, mono=True)
+        y, _ = librosa.load(wav_path, sr=SAMPLE_RATE, mono=True)
         if y.size == 0:
-            return path
+            return wav_path
         y, _ = librosa.effects.trim(y, top_db=30)
         peak = float(np.max(np.abs(y)))
         if peak > 0:
             y = y * (0.95 / peak)
-        fd, out = tempfile.mkstemp(suffix=".wav")
-        os.close(fd)
-        sf.write(out, y, SAMPLE_RATE)
-        return out
+        sf.write(wav_path, y, SAMPLE_RATE)
+        return wav_path
     except Exception:
-        return path
+        # decoding succeeded even if trimming didn't — the WAV is still usable
+        return wav_path
 
 
 def clone_speak(
@@ -151,11 +167,16 @@ def clone_speak(
 
     try:
         # --- Stage 2: morph the clean speech to the reference voice ---
-        _converter().voice_conversion_to_file(
-            source_wav=src_path,
-            target_wav=ref,
-            file_path=out_path,
-        )
+        try:
+            _converter().voice_conversion_to_file(
+                source_wav=src_path,
+                target_wav=ref,
+                file_path=out_path,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Voice conversion failed (check the reference audio): {exc}"
+            ) from exc
         if on_progress:
             on_progress(2, 2)
 
