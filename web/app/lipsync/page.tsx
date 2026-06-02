@@ -1,13 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { startLipsync, waitForLipsync } from "@/lib/lipsync";
 
 type Phase = "idle" | "working" | "done" | "error";
 
 export default function LipsyncPage() {
-  const [face, setFace] = useState<File | null>(null);
+  const [face, setFace] = useState<Blob | null>(null);
+  const [faceName, setFaceName] = useState("face.mp4");
+  const [faceIsVideo, setFaceIsVideo] = useState(true);
   const [faceUrl, setFaceUrl] = useState("");
   const [audio, setAudio] = useState<File | null>(null);
   const [audioUrl, setAudioUrl] = useState("");
@@ -16,6 +18,13 @@ export default function LipsyncPage() {
   const [elapsed, setElapsed] = useState(0);
   const [resultUrl, setResultUrl] = useState("");
   const [error, setError] = useState("");
+
+  // video recording (webcam)
+  const [recording, setRecording] = useState(false);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const liveVideoRef = useRef<HTMLVideoElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
 
   useEffect(() => {
     if (!face) return setFaceUrl("");
@@ -31,7 +40,73 @@ export default function LipsyncPage() {
     return () => URL.revokeObjectURL(u);
   }, [audio]);
 
-  const faceIsVideo = face?.type.startsWith("video");
+  function pickFace(f: File | null) {
+    if (!f) return;
+    setFace(f);
+    setFaceName(f.name);
+    setFaceIsVideo(f.type.startsWith("video"));
+    setPhase("idle");
+    setResultUrl("");
+    setError("");
+  }
+
+  async function toggleRecording() {
+    if (recording) {
+      recorderRef.current?.stop();
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError("Recording needs a secure context (https or localhost).");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 640, height: 480, facingMode: "user" },
+        audio: false, // we lip-sync separate audio onto it
+      });
+      streamRef.current = stream;
+      // show a live preview while recording
+      if (liveVideoRef.current) {
+        liveVideoRef.current.srcObject = stream;
+        await liveVideoRef.current.play().catch(() => {});
+      }
+      const rec = new MediaRecorder(stream);
+      chunksRef.current = [];
+      rec.ondataavailable = (e) => e.data.size && chunksRef.current.push(e.data);
+      rec.onstop = () => {
+        const blob = new Blob(chunksRef.current, {
+          type: rec.mimeType || "video/webm",
+        });
+        stream.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+        if (liveVideoRef.current) liveVideoRef.current.srcObject = null;
+        setRecording(false);
+        if (blob.size === 0) {
+          setError("Recording captured nothing — check camera permissions.");
+          return;
+        }
+        setFace(blob);
+        setFaceName("recording.webm");
+        setFaceIsVideo(true);
+        setPhase("idle");
+        setResultUrl("");
+        setError("");
+      };
+      recorderRef.current = rec;
+      rec.start(250);
+      setError("");
+      setRecording(true);
+    } catch (e) {
+      const name = e instanceof DOMException ? e.name : "";
+      setError(
+        name === "NotAllowedError"
+          ? "Camera permission was denied. Allow camera access and try again."
+          : name === "NotFoundError"
+            ? "No camera found."
+            : `Couldn't access the camera${name ? ` (${name})` : ""}.`,
+      );
+    }
+  }
 
   async function run() {
     if (!face || !audio) return;
@@ -40,7 +115,7 @@ export default function LipsyncPage() {
     setResultUrl("");
     setElapsed(0);
     try {
-      const jobId = await startLipsync(face, audio, face.name, audio.name);
+      const jobId = await startLipsync(face, audio, faceName, audio.name);
       const url = await waitForLipsync(jobId, setElapsed);
       setResultUrl(url);
       setPhase("done");
@@ -65,21 +140,40 @@ export default function LipsyncPage() {
       <div className="mt-8 rounded-xl border border-gray-200 p-6 dark:border-gray-800">
         {/* Face */}
         <p className="mb-2 text-sm font-medium">1. Face (video or photo)</p>
-        <input
-          type="file"
-          accept="video/*,image/*"
-          onChange={(e) => {
-            setFace(e.target.files?.[0] ?? null);
-            setPhase("idle");
-            setResultUrl("");
-          }}
-          className="block w-full text-sm file:mr-4 file:rounded-md file:border-0 file:bg-pink-500 file:px-4 file:py-2 file:text-white hover:file:bg-pink-600"
-        />
+        <div className="flex flex-wrap items-center gap-3">
+          <input
+            type="file"
+            accept="video/*,image/*"
+            onChange={(e) => pickFace(e.target.files?.[0] ?? null)}
+            className="block flex-1 text-sm file:mr-4 file:rounded-md file:border-0 file:bg-pink-500 file:px-4 file:py-2 file:text-white hover:file:bg-pink-600"
+          />
+          <button
+            onClick={toggleRecording}
+            className={`flex items-center gap-2 rounded-full px-5 py-2.5 text-sm font-medium transition ${
+              recording
+                ? "bg-red-500 text-white shadow-md shadow-red-500/30"
+                : "bg-gradient-to-r from-pink-500 to-purple-500 text-white shadow-sm hover:shadow-md"
+            }`}
+          >
+            {recording ? "⏹ Stop" : "📹 Record"}
+          </button>
+        </div>
         <p className="mt-2 text-xs text-gray-500">
           A clear, front-facing shot works best. Short clips process faster on
-          CPU.
+          CPU. Recording in-browser also keeps the file small.
         </p>
-        {faceUrl &&
+
+        {/* Live camera preview while recording */}
+        <video
+          ref={liveVideoRef}
+          muted
+          playsInline
+          className={`mt-3 w-full rounded-lg ${recording ? "block" : "hidden"}`}
+        />
+
+        {/* Preview of the selected/recorded face */}
+        {!recording &&
+          faceUrl &&
           (faceIsVideo ? (
             <video src={faceUrl} controls className="mt-3 w-full rounded-lg" />
           ) : (

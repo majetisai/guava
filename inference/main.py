@@ -381,7 +381,9 @@ async def convert(audio: UploadFile = File(...), fmt: str = Form(...)) -> Respon
 # --------------------------------------------------------------------------
 
 # face uploads can be bigger than audio (it's video); allow more headroom
-MAX_FACE_BYTES = int(os.getenv("GUAVA_MAX_FACE_MB", "50")) * 1024 * 1024
+# Generous cap — the worker downscales to 480px anyway, so big uploads just cost
+# bandwidth. 200MB comfortably covers phone videos.
+MAX_FACE_BYTES = int(os.getenv("GUAVA_MAX_FACE_MB", "200")) * 1024 * 1024
 
 _lipsync_jobs: dict[str, dict] = {}
 
