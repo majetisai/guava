@@ -4,15 +4,19 @@
 
 const BASE = process.env.NEXT_PUBLIC_INFERENCE_URL ?? "http://localhost:7860";
 
+export type LipsyncQuality = "fast" | "high";
+
 export async function startLipsync(
   face: Blob,
   audio: Blob,
   faceName = "face.mp4",
   audioName = "audio.wav",
+  quality: LipsyncQuality = "fast",
 ): Promise<string> {
   const form = new FormData();
   form.append("face", face, faceName);
   form.append("audio", audio, audioName);
+  form.append("quality", quality);
 
   const res = await fetch(`${BASE}/lipsync`, { method: "POST", body: form });
   if (!res.ok) {

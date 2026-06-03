@@ -388,12 +388,12 @@ MAX_FACE_BYTES = int(os.getenv("GUAVA_MAX_FACE_MB", "200")) * 1024 * 1024
 _lipsync_jobs: dict[str, dict] = {}
 
 
-def _run_lipsync(job_id: str, face_path: str, audio_path: str) -> None:
+def _run_lipsync(job_id: str, face_path: str, audio_path: str, quality: str) -> None:
     """Background worker: run Wav2Lip, store the video, clean up the inputs."""
     try:
         from models.lipsync import lipsync  # lazy import
 
-        video = lipsync(face_path, audio_path)
+        video = lipsync(face_path, audio_path, quality=quality)
         job = _lipsync_jobs[job_id]
         job.update(status="completed", video=video, error=None)
     except Exception as exc:
@@ -411,9 +411,13 @@ async def lipsync_start(
     background: BackgroundTasks,
     face: UploadFile = File(...),
     audio: UploadFile = File(...),
+    quality: str = Form(default="fast"),
 ) -> dict:
     """Start a lip-sync job: `face` is a video clip or a photo, `audio` is the
-    speech to sync onto it. Returns a job id; poll /lipsync/status/{id}."""
+    speech to sync onto it. quality is "fast" (480p) or "high" (720p). Returns a
+    job id; poll /lipsync/status/{id}."""
+    if quality not in ("fast", "high"):
+        raise HTTPException(status_code=400, detail="quality must be fast or high.")
     face_data = await face.read()
     if not face_data:
         raise HTTPException(status_code=400, detail="Empty face file.")
@@ -437,7 +441,7 @@ async def lipsync_start(
 
     job_id = uuid.uuid4().hex
     _lipsync_jobs[job_id] = {"status": "running", "video": None, "error": None}
-    background.add_task(_run_lipsync, job_id, face_path, audio_path)
+    background.add_task(_run_lipsync, job_id, face_path, audio_path, quality)
     return {"jobId": job_id, "status": "running"}
 
 

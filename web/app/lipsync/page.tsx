@@ -14,6 +14,7 @@ export default function LipsyncPage() {
   const [audio, setAudio] = useState<File | null>(null);
   const [audioUrl, setAudioUrl] = useState("");
 
+  const [quality, setQuality] = useState<"fast" | "high">("fast");
   const [phase, setPhase] = useState<Phase>("idle");
   const [elapsed, setElapsed] = useState(0);
   const [resultUrl, setResultUrl] = useState("");
@@ -115,7 +116,7 @@ export default function LipsyncPage() {
     setResultUrl("");
     setElapsed(0);
     try {
-      const jobId = await startLipsync(face, audio, faceName, audio.name);
+      const jobId = await startLipsync(face, audio, faceName, audio.name, quality);
       const url = await waitForLipsync(jobId, setElapsed);
       setResultUrl(url);
       setPhase("done");
@@ -209,6 +210,37 @@ export default function LipsyncPage() {
           , download it, and use it here.
         </p>
         {audioUrl && <audio src={audioUrl} controls className="mt-3 w-full" />}
+
+        {/* Quality */}
+        <p className="mt-6 mb-2 text-sm font-medium">3. Quality</p>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <button
+            onClick={() => setQuality("fast")}
+            className={`flex-1 rounded-lg border p-3 text-left text-sm transition ${
+              quality === "fast"
+                ? "border-pink-400 bg-pink-50 dark:bg-pink-950/20"
+                : "border-gray-200 hover:border-pink-300 dark:border-gray-800"
+            }`}
+          >
+            <span className="font-medium">⚡ Fast</span>
+            <span className="mt-1 block text-xs text-gray-500">
+              480p. Quicker on CPU, softer image.
+            </span>
+          </button>
+          <button
+            onClick={() => setQuality("high")}
+            className={`flex-1 rounded-lg border p-3 text-left text-sm transition ${
+              quality === "high"
+                ? "border-pink-400 bg-pink-50 dark:bg-pink-950/20"
+                : "border-gray-200 hover:border-pink-300 dark:border-gray-800"
+            }`}
+          >
+            <span className="font-medium">✨ High quality</span>
+            <span className="mt-1 block text-xs text-gray-500">
+              720p. Sharper, but noticeably slower on CPU.
+            </span>
+          </button>
+        </div>
 
         <button
           onClick={run}

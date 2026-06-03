@@ -21,12 +21,13 @@ _W2L_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 _CHECKPOINT = os.path.join(_W2L_DIR, "checkpoints", "wav2lip_gan.pth")
 
 # Cap the working resolution: Wav2Lip only needs the face region, and full-res
-# frames make CPU inference crawl. We downscale the longest side to this.
-_MAX_DIM = 480
+# frames make CPU inference crawl. We downscale the longest side to a cap that
+# depends on the chosen quality. "fast" trades sharpness for speed.
+_QUALITY_MAX_DIM = {"fast": 480, "high": 720}
 
 
-def _downscale(src: str) -> str:
-    """Downscale a video/image so its longest side is <= _MAX_DIM. Returns a temp
+def _downscale(src: str, max_dim: int) -> str:
+    """Downscale a video/image so its longest side is <= max_dim. Returns a temp
     file path (or the original if it's already small / on any error)."""
     import cv2
 
@@ -34,10 +35,10 @@ def _downscale(src: str) -> str:
     w = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
     h = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
     cap.release()
-    if not w or not h or max(w, h) <= _MAX_DIM:
+    if not w or not h or max(w, h) <= max_dim:
         return src
 
-    scale = _MAX_DIM / max(w, h)
+    scale = max_dim / max(w, h)
     nw, nh = int(w * scale) // 2 * 2, int(h * scale) // 2 * 2  # even dims for codecs
     ext = os.path.splitext(src)[1] or ".mp4"
     fd, out = tempfile.mkstemp(suffix=ext)
@@ -50,13 +51,16 @@ def _downscale(src: str) -> str:
     return out
 
 
-def lipsync(face_path: str, audio_path: str) -> bytes:
+def lipsync(face_path: str, audio_path: str, quality: str = "fast") -> bytes:
     """Sync the face in `face_path` (video or image) to `audio_path`. Returns the
-    resulting MP4 as bytes."""
+    resulting MP4 as bytes.
+
+    quality: "fast" (480p, quicker) or "high" (720p, sharper but slower)."""
     if not os.path.exists(_CHECKPOINT):
         raise RuntimeError("Wav2Lip checkpoint is missing.")
 
-    face = _downscale(face_path)
+    max_dim = _QUALITY_MAX_DIM.get(quality, 480)
+    face = _downscale(face_path, max_dim)
     fd, out_path = tempfile.mkstemp(suffix=".mp4")
     os.close(fd)
 
@@ -69,6 +73,9 @@ def lipsync(face_path: str, audio_path: str) -> bytes:
         "--wav2lip_batch_size", "16",
         "--face_det_batch_size", "4",
         "--resize_factor", "1",
+        # pad the detected face box down a bit so the chin/jaw is included —
+        # reduces the "floating mouth" artifact
+        "--pads", "0", "15", "0", "0",
     ]
     try:
         proc = subprocess.run(
